@@ -41,29 +41,32 @@ class AudioRecorder:
             str(output_path),
         ]
 
-        self.process = subprocess.Popen(command)
+        self.recording_process = subprocess.Popen(command)
         self.last_file = Path(output_path)
         print("Recording started")
 
     def stop(self):
-        if self.process is None:
-            return
+        if self.recording_process is None:
+            process = self.playing_process
+            self.playing_process = None
+        else:
+            process = self.recording_process
+            self.recording_process = None
 
-        self.process.terminate()
-        self.process.wait()
-        self.process = None
-        print("Recording stopped")
+        process.terminate()
+        process.wait()
+        print("Stopped")
 
-    def cancel(self):
+    def cancel_recording(self):
         """Arrête l'enregistrement en cours sans sauvegarder le fichier."""
-        if self.process is None:
+        if self.recording_process is None :
             return
 
         current_file = self.last_file
 
-        self.process.terminate()
-        self.process.wait()
-        self.process = None
+        self.recording_process.terminate()
+        self.recording_process.wait()
+        self.recording_process = None
 
         # Supprime le fichier enregistré
         if current_file is not None and current_file.exists():
@@ -89,7 +92,7 @@ class AudioRecorder:
             print("No previous recording available")
 
     def play_last(self):
-        if self.process is not None:
+        if self.recording_process is not None:
             return
 
         if self.last_file is None or not self.last_file.exists():
@@ -97,7 +100,7 @@ class AudioRecorder:
             return
 
         try:
-            subprocess.Popen(["aplay", str(self.last_file)])
+            self.playing_process = subprocess.Popen(["aplay", str(self.last_file)])
         except Exception as e:
             print("Playback error", e)
 
@@ -106,19 +109,21 @@ class AudioRecorder:
         if record_button.is_pressed:
             print("Cancel mode: stopping recording without saving and playing last message")
             self.cancelled = True
-            self.cancel()
-            self.play_last()
-        else:
-            self.play_last()
+            if self.recording_process is not None :
+                self.cancel_recording()
+                self.play_last()
+            else:
+                self.stop()
+                self.play_last()
 
     def on_record_released(self):
         """Gère le relâchement du bouton d'enregistrement."""
+        self.stop()
         if self.cancelled:
             print("Button 5 released after cancel, system ready")
             self.cancelled = False
             return
-        self.stop()
-
+        
 
 if __name__ == "__main__":
 
