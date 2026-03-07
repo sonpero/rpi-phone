@@ -1,4 +1,6 @@
 import subprocess
+import threading
+
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -12,13 +14,18 @@ class AudioRecorder:
         device: str = "hw:0,0",
         sample_rate: int = 16000,
         channels: int = 2,
+        max_duration: int = (60),
     ):
         self.device = device
         self.sample_rate = sample_rate
         self.channels = channels
+        self.max_duration = max_duration
         self.process: Optional[subprocess.Popen] = None
         self.last_file: Optional[Path] = None
         self.cancelled = False
+        self.max_duration_reached = False
+        self.timer: Optional[threading.Timer] = None
+        self.playing_process = None
 
     def create_time_stamp_suffix(self):
         suffix = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
@@ -28,7 +35,9 @@ class AudioRecorder:
         if self.process is not None:
             return
 
-        subprocess.run(["aplay", "tone_440.wav"])
+        # Reset the max duration flag
+        self.max_duration_reached = False
+
         suffix = self.create_time_stamp_suffix()
         output_path = f'{output_file_path}/message_{suffix}.wav'
         command = [
@@ -44,8 +53,18 @@ class AudioRecorder:
         self.recording_process = subprocess.Popen(command)
         self.last_file = Path(output_path)
         print("Recording started")
+        subprocess.run(["aplay", "tone_440.wav"])
+
+        # Start timer for maximum duration
+        self.timer = threading.Timer(self.max_duration, self._on_max_duration_reached)
+        self.timer.start()
 
     def stop(self):
+        # Cancel the timer if it's running
+        if self.timer is not None:
+            self.timer.cancel()
+            self.timer = None
+
         if self.recording_process is None:
             process = self.playing_process
             self.playing_process = None
@@ -53,12 +72,18 @@ class AudioRecorder:
             process = self.recording_process
             self.recording_process = None
 
-        process.terminate()
-        process.wait()
-        print("Stopped")
+        if process is not None:
+            process.terminate()
+            process.wait()
+            print("Stopped")
 
     def cancel_recording(self):
         """Arrête l'enregistrement en cours sans sauvegarder le fichier."""
+        # Cancel the timer if it's running
+        if self.timer is not None:
+            self.timer.cancel()
+            self.timer = None
+        
         if self.recording_process is None :
             return
 
@@ -123,6 +148,15 @@ class AudioRecorder:
             print("Button 5 released after cancel, system ready")
             self.cancelled = False
             return
+
+    def _on_max_duration_reached(self):
+        """Called when maximum recording duration is reached."""
+        print(f"Maximum recording duration ({self.max_duration}s) reached")
+        self.max_duration_reached = True
+        if self.recording_process is not None:
+            self.stop()
+            print("Recording stopped automatically")
+            subprocess.run(["aplay", "tone_440.wav"])
         
 
 if __name__ == "__main__":
