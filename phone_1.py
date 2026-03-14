@@ -1,11 +1,20 @@
 import subprocess
 import threading
+import os
+import io
+import zipfile
+import json
+
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from urllib.parse import unquote
 
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from gpiozero import Button
 from signal import pause
+
+MESSAGES_DIR = Path("/home/alex/phone/messages")
 
 
 class AudioRecorder:
@@ -53,7 +62,7 @@ class AudioRecorder:
         self.recording_process = subprocess.Popen(command)
         self.last_file = Path(output_path)
         print("Recording started")
-        subprocess.run(["aplay", "tone_440.wav"])
+        subprocess.run(["aplay", "/home/alex/phone/rpi-phone/tone_440.wav"])
 
         # Start timer for maximum duration
         self.timer = threading.Timer(self.max_duration, self._on_max_duration_reached)
@@ -156,11 +165,196 @@ class AudioRecorder:
         if self.recording_process is not None:
             self.stop()
             print("Recording stopped automatically")
-            subprocess.run(["aplay", "tone_440.wav"])
+            subprocess.run(["aplay", "/home/alex/phone/rpi-phone/tone_440.wav"])
         
 
-if __name__ == "__main__":
+class MessageHandler(BaseHTTPRequestHandler):
 
+    def do_GET(self):
+
+        if self.path == "/" or self.path == "/index.html":
+            self.serve_index()
+
+        elif self.path.startswith("/files/"):
+            self.serve_file(self.path[len("/files/"):])
+
+        else:
+            self.send_error(404)
+
+    def do_POST(self):
+
+        if self.path == "/download_zip":
+
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+
+            data = json.loads(body.decode())
+            files = data.get("files", [])
+
+            buffer = io.BytesIO()
+
+            with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as z:
+
+                for name in files:
+                    path = MESSAGES_DIR / name
+
+                    if path.exists():
+                        z.write(path, arcname=name)
+
+            zip_data = buffer.getvalue()
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header(
+                "Content-Disposition", "attachment; filename=messages.zip"
+            )
+            self.send_header("Content-Length", str(len(zip_data)))
+            self.end_headers()
+
+            self.wfile.write(zip_data)
+
+        else:
+            self.send_error(404)
+
+    def serve_file(self, filename):
+
+        filename = unquote(filename)
+        path = MESSAGES_DIR / filename
+
+        if not path.exists():
+            self.send_error(404)
+            return
+
+        with open(path, "rb") as f:
+            data = f.read()
+
+        self.send_response(200)
+        self.send_header("Content-Type", "audio/wav")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+
+        self.wfile.write(data)
+
+    def serve_index(self):
+
+        files = sorted(
+            MESSAGES_DIR.glob("message_*.wav"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+
+        rows = []
+
+        for f in files:
+            name = f.name
+
+            rows.append(
+                f"""
+<div class="msg">
+<input type="checkbox" class="chk" value="{name}">
+<div class="name">{name}</div>
+<audio controls src="/files/{name}"></audio>
+<a href="/files/{name}" download>Download</a>
+</div>
+"""
+            )
+
+        html = f"""
+<!DOCTYPE html>
+<html>
+
+<head>
+
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<style>
+
+body{{font-family:sans-serif;margin:20px;background:#f5f5f5}}
+
+.msg{{background:white;padding:12px;margin-bottom:12px;border-radius:8px}}
+
+.name{{font-size:14px;margin-bottom:6px}}
+
+audio{{width:100%}}
+
+button{{margin-bottom:12px;padding:8px 12px}}
+
+</style>
+
+<script>
+
+function selectAll(){{
+document.querySelectorAll(".chk").forEach(c=>c.checked=true);
+}}
+
+function downloadSelected(){{
+
+const files=[...document.querySelectorAll(".chk:checked")].map(c=>c.value);
+
+if(files.length===0){{
+alert("No messages selected");
+return;
+}}
+
+fetch("/download_zip",{{
+method:"POST",
+headers:{{"Content-Type":"application/json"}},
+body:JSON.stringify({{files:files}})
+}})
+.then(r=>r.blob())
+.then(blob=>{{
+const url=window.URL.createObjectURL(blob);
+const a=document.createElement("a");
+a.href=url;
+a.download="messages.zip";
+document.body.appendChild(a);
+a.click();
+a.remove();
+}});
+
+}}
+
+</script>
+
+</head>
+
+<body>
+
+<h2>Messages</h2>
+
+<button onclick="selectAll()">Select all</button>
+<button onclick="downloadSelected()">Download selected</button>
+
+{''.join(rows)}
+
+</body>
+</html>
+"""
+
+        data = html.encode()
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+
+        self.wfile.write(data)
+        
+
+def start_http_server():
+    server = ThreadingHTTPServer(("0.0.0.0", 8000), MessageHandler)
+
+    threading.Thread(
+        target=server.serve_forever,
+        daemon=True
+    ).start()
+
+    print("HTTP server running on port 8000")
+
+
+if __name__ == "__main__":
+    start_http_server()
+    
     recorder = AudioRecorder()
 
     record_button = Button(5, pull_up=True, bounce_time=0.1)
