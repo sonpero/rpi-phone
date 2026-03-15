@@ -23,7 +23,7 @@ class AudioRecorder:
         device: str = "hw:0,0",
         sample_rate: int = 16000,
         channels: int = 2,
-        max_duration: int = (60),
+        max_duration: int = (180),
     ):
         self.device = device
         self.sample_rate = sample_rate
@@ -35,6 +35,8 @@ class AudioRecorder:
         self.max_duration_reached = False
         self.timer: Optional[threading.Timer] = None
         self.playing_process = None
+        self.playing_welcome_process = None
+        self.recording_process = None
 
     def create_time_stamp_suffix(self):
         suffix = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
@@ -47,6 +49,12 @@ class AudioRecorder:
         # Reset the max duration flag
         self.max_duration_reached = False
 
+        subprocess.run(["aplay", "/home/alex/phone/rpi-phone/tone_440.wav"])
+        # subprocess.run(["aplay", "/home/alex/phone/rpi-phone/phone-calling.wav"])
+        self.playing_welcome_process = subprocess.Popen(["aplay", "/home/alex/phone/rpi-phone/welcome_message.wav"])
+        self.playing_welcome_process.wait()
+        # subprocess.run(["aplay", "/home/alex/phone/rpi-phone/welcome_message.wav"])
+        subprocess.run(["aplay", "/home/alex/phone/rpi-phone/tone_440.wav"])
         suffix = self.create_time_stamp_suffix()
         output_path = f'{output_file_path}/message_{suffix}.wav'
         command = [
@@ -62,7 +70,6 @@ class AudioRecorder:
         self.recording_process = subprocess.Popen(command)
         self.last_file = Path(output_path)
         print("Recording started")
-        subprocess.run(["aplay", "/home/alex/phone/rpi-phone/tone_440.wav"])
 
         # Start timer for maximum duration
         self.timer = threading.Timer(self.max_duration, self._on_max_duration_reached)
@@ -80,6 +87,12 @@ class AudioRecorder:
         else:
             process = self.recording_process
             self.recording_process = None
+
+        if self.playing_welcome_process is not None:
+            self.playing_welcome_process.terminate()
+            self.playing_welcome_process.wait()
+            self.playing_welcome_process = None
+            print("Stopped welcome message")
 
         if process is not None:
             process.terminate()
@@ -150,6 +163,12 @@ class AudioRecorder:
                 self.stop()
                 self.play_last()
 
+            if self.playing_welcome_process is not None:
+                self.playing_welcome_process.terminate()
+                self.playing_welcome_process.wait()
+                self.stop()
+                self.play_last()
+
     def on_record_released(self):
         """Gère le relâchement du bouton d'enregistrement."""
         self.stop()
@@ -194,10 +213,8 @@ class MessageHandler(BaseHTTPRequestHandler):
             buffer = io.BytesIO()
 
             with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as z:
-
                 for name in files:
                     path = MESSAGES_DIR / name
-
                     if path.exists():
                         z.write(path, arcname=name)
 
@@ -205,13 +222,36 @@ class MessageHandler(BaseHTTPRequestHandler):
 
             self.send_response(200)
             self.send_header("Content-Type", "application/zip")
-            self.send_header(
-                "Content-Disposition", "attachment; filename=messages.zip"
-            )
+            self.send_header("Content-Disposition", "attachment; filename=messages.zip")
             self.send_header("Content-Length", str(len(zip_data)))
             self.end_headers()
 
             self.wfile.write(zip_data)
+
+        elif self.path == "/delete":
+
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+
+            data = json.loads(body.decode())
+            files = data.get("files", [])
+
+            deleted = []
+
+            for name in files:
+                path = MESSAGES_DIR / name
+                if path.exists():
+                    path.unlink()
+                    deleted.append(name)
+
+            resp = json.dumps({"deleted": deleted}).encode()
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp)))
+            self.end_headers()
+
+            self.wfile.write(resp)
 
         else:
             self.send_error(404)
@@ -277,7 +317,7 @@ body{{font-family:sans-serif;margin:20px;background:#f5f5f5}}
 
 audio{{width:100%}}
 
-button{{margin-bottom:12px;padding:8px 12px}}
+button{{margin-bottom:12px;padding:8px 12px;margin-right:6px}}
 
 </style>
 
@@ -314,6 +354,31 @@ a.remove();
 
 }}
 
+function deleteSelected(){{
+
+const files=[...document.querySelectorAll(".chk:checked")].map(c=>c.value);
+
+if(files.length===0){{
+alert("No messages selected");
+return;
+}}
+
+if(!confirm("Delete selected messages?")){{
+return;
+}}
+
+fetch("/delete",{{
+method:"POST",
+headers:{{"Content-Type":"application/json"}},
+body:JSON.stringify({{files:files}})
+}})
+.then(r=>r.json())
+.then(()=>{{
+location.reload();
+}});
+
+}}
+
 </script>
 
 </head>
@@ -324,6 +389,7 @@ a.remove();
 
 <button onclick="selectAll()">Select all</button>
 <button onclick="downloadSelected()">Download selected</button>
+<button onclick="deleteSelected()">Delete selected</button>
 
 {''.join(rows)}
 
