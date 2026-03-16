@@ -23,7 +23,7 @@ class AudioRecorder:
         device: str = "hw:0,0",
         sample_rate: int = 16000,
         channels: int = 2,
-        max_duration: int = (180),
+        max_duration: int = 180,
     ):
         self.device = device
         self.sample_rate = sample_rate
@@ -37,67 +37,110 @@ class AudioRecorder:
         self.playing_process = None
         self.playing_welcome_process = None
         self.recording_process = None
+        self._stop_requested = False
+        self._start_lock = threading.Lock()
 
     def create_time_stamp_suffix(self):
         suffix = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
         return suffix
 
     def start(self, output_file_path: str):
-        if self.process is not None:
-            return
+        """Run the full start sequence in a background thread."""
+        threading.Thread(
+            target=self._start_sequence,
+            args=(output_file_path,),
+            daemon=True,
+        ).start()
 
-        # Reset the max duration flag
-        self.max_duration_reached = False
+    def _start_sequence(self, output_file_path: str):
+        with self._start_lock:
+            self._stop_requested = False
 
-        subprocess.run(["aplay", "/home/alex/phone/rpi-phone/tone_440.wav"])
-        # subprocess.run(["aplay", "/home/alex/phone/rpi-phone/phone-calling.wav"])
-        self.playing_welcome_process = subprocess.Popen(["aplay", "/home/alex/phone/rpi-phone/welcome_message.wav"])
-        self.playing_welcome_process.wait()
-        # subprocess.run(["aplay", "/home/alex/phone/rpi-phone/welcome_message.wav"])
-        subprocess.run(["aplay", "/home/alex/phone/rpi-phone/tone_440.wav"])
-        suffix = self.create_time_stamp_suffix()
-        output_path = f'{output_file_path}/message_{suffix}.wav'
-        command = [
-            "arecord",
-            "-D", self.device,
-            "-f", "S16_LE",
-            "-r", str(self.sample_rate),
-            "-c", str(self.channels),
-            "-t", "wav",
-            str(output_path),
-        ]
+            # --- Play dial tone ---
+            proc = subprocess.Popen(
+                ["aplay", "/home/alex/phone/rpi-phone/tone_440.wav"]
+            )
+            proc.wait()
+            if self._stop_requested:
+                print("Stop requested after dial tone, aborting start")
+                return
 
-        self.recording_process = subprocess.Popen(command)
-        self.last_file = Path(output_path)
-        print("Recording started")
+            # --- Play welcome message ---
+            self.playing_welcome_process = subprocess.Popen(
+                ["aplay", "/home/alex/phone/rpi-phone/welcome_message.wav"]
+            )
+            self.playing_welcome_process.wait()
+            # Check AFTER wait returns — was it killed or did it finish naturally?
+            if self._stop_requested:
+                self.playing_welcome_process = None
+                print("Stop requested during welcome message, aborting start")
+                return
+            self.playing_welcome_process = None
 
-        # Start timer for maximum duration
-        self.timer = threading.Timer(self.max_duration, self._on_max_duration_reached)
-        self.timer.start()
+            # --- Play beep tone ---
+            proc = subprocess.Popen(
+                ["aplay", "/home/alex/phone/rpi-phone/tone_440.wav"]
+            )
+            proc.wait()
+            if self._stop_requested:
+                print("Stop requested after beep tone, aborting start")
+                return
+
+            # --- Start recording ---
+            suffix = self.create_time_stamp_suffix()
+            output_path = f'{output_file_path}/message_{suffix}.wav'
+            command = [
+                "arecord",
+                "-D", self.device,
+                "-f", "S16_LE",
+                "-r", str(self.sample_rate),
+                "-c", str(self.channels),
+                "-t", "wav",
+                str(output_path),
+            ]
+
+            self.recording_process = subprocess.Popen(command)
+            self.last_file = Path(output_path)
+            print("Recording started")
+
+            # Start timer for maximum duration
+            self.timer = threading.Timer(
+                self.max_duration, self._on_max_duration_reached
+            )
+            self.timer.start()
 
     def stop(self):
+        # Signal the start sequence to abort at the next checkpoint
+        self._stop_requested = True
+
         # Cancel the timer if it's running
         if self.timer is not None:
             self.timer.cancel()
             self.timer = None
 
-        if self.recording_process is None:
-            process = self.playing_process
-            self.playing_process = None
-        else:
-            process = self.recording_process
-            self.recording_process = None
-
+        # Kill the welcome message if still playing
         if self.playing_welcome_process is not None:
-            self.playing_welcome_process.terminate()
-            self.playing_welcome_process.wait()
+            try:
+                self.playing_welcome_process.terminate()
+                self.playing_welcome_process.wait()
+            except Exception:
+                pass
             self.playing_welcome_process = None
             print("Stopped welcome message")
 
-        if process is not None:
-            process.terminate()
-            process.wait()
-            print("Stopped")
+        # Kill the recording if active
+        if self.recording_process is not None:
+            self.recording_process.terminate()
+            self.recording_process.wait()
+            self.recording_process = None
+            print("Recording stopped")
+
+        # Kill playback if active
+        if self.playing_process is not None:
+            self.playing_process.terminate()
+            self.playing_process.wait()
+            self.playing_process = None
+            print("Playback stopped")
 
     def cancel_recording(self):
         """Arrête l'enregistrement en cours sans sauvegarder le fichier."""
