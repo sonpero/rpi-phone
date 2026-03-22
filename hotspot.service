@@ -1,0 +1,14 @@
+[Unit]
+Description=Start WiFi Hotspot
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+ExecStartPre=/bin/sh -c 'until /usr/bin/nmcli device status | /bin/grep -q wlan0; do /bin/sleep 1; done'
+ExecStart=/usr/bin/nmcli device wifi hotspot ifname wlan0 ssid PiPhone password raspberry
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
