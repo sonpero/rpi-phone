@@ -28,5 +28,5 @@ nmcli device wifi hotspot ifname wlan0 ssid PiPhone password raspberry
 activate gadget mode to join rpi on usb  
 ip : 192.168.7.2  
 ssh alex@192.168.7.2  
-adress for message management : 10.42.0.1  
+adress for message management : 10.42.0.1:8000 
 
